@@ -103,20 +103,21 @@ static inline double Complex_Mod(Complex x) {
  *   lcg_seed(12345ULL);     // manually seed
  */
 
-#define LCG_A 6364136223846793005ULL
-#define LCG_C 1442695040888963407ULL
-#define LCG_M (1ULL << 64)
+#define LCG_A       6364136223846793005ULL
+#define LCG_C       1442695040888963407ULL
+#define LCG_M       (1ULL << 64)
+#define PRE_SEED    0x9E3779B97F4A7C15ULL // 64-bit golden ratio constant
 
 static uint64_t lcg_state = 0ULL;
 static int user_seeded = 0;
 
 /**
- * @brief Seed the LCG with a user-defined or time-based seed.
+ * @brief Seed the LCG with a user-defined or PRE_SEED.
  *
- * @param seed User-defined seed. If 0, uses current time.
+ * @param seed User-defined seed. If 0, uses PRE_SEED.
  */
 static inline void lcg_seed(uint64_t seed) {
-    lcg_state = (seed != 0ULL) ? seed : (uint64_t)time(NULL);
+    lcg_state = (seed != 0ULL) ? seed : PRE_SEED;
     user_seeded = 1;
 }
 
@@ -129,7 +130,7 @@ static inline void lcg_seed(uint64_t seed) {
  */
 static inline uint64_t lcg_random(double *out, size_t n) {
     if (!user_seeded && lcg_state == 0ULL) {
-        lcg_state = (uint64_t)time(NULL); // Auto-seed
+        lcg_state = PRE_SEED; // Auto-seed
     }
     uint64_t used_seed = lcg_state;
     for (size_t i = 0; i < n; ++i) {
@@ -156,7 +157,7 @@ static inline uint64_t lcg_test_random(
     uint64_t seed,
     size_t n
 ) {
-    uint64_t state = (seed != 0ULL) ? seed : (uint64_t)time(NULL);
+    uint64_t state = (seed != 0ULL) ? seed : (uint64_t)PRE_SEED;
     uint64_t used_seed = state;
 
     for (size_t i = 0; i < n; ++i) {
