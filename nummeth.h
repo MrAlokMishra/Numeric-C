@@ -105,6 +105,7 @@ static inline double Complex_Mod(Complex x) {
 
 #define LCG_A 6364136223846793005ULL
 #define LCG_C 1442695040888963407ULL
+#define LCG_M (1ULL << 64)
 
 static uint64_t lcg_state = 0ULL;
 static int user_seeded = 0;
@@ -128,16 +129,41 @@ static inline void lcg_seed(uint64_t seed) {
  */
 static inline uint64_t lcg_random(double *out, size_t n) {
     if (!user_seeded && lcg_state == 0ULL) {
-        lcg_state = (uint64_t)time(NULL);  // Auto-seed on first call
+        lcg_state = (uint64_t)time(NULL); // Auto-seed
     }
-
     uint64_t used_seed = lcg_state;
-
     for (size_t i = 0; i < n; ++i) {
         lcg_state = (LCG_A * lcg_state + LCG_C);
-        out[i] = (lcg_state >> 11) * (1.0 / (1ULL << 53)); //to get between [0,1)
+        out[i] = (lcg_state >> 11) * (1.0 / (1ULL << 53));
     }
+    return used_seed;
+}
 
+/**
+ * @brief Test any LCG params: X_{n+1} = (A * X_n + C) mod M
+ *
+ * @param out Output array to fill.
+ * @param n   Number of random numbers to generate.
+ * @param A   Multiplier.
+ * @param C   Increment.
+ * @param M   Modulus.
+ */
+static inline uint64_t lcg_test_random(
+    double *out,
+    uint64_t A,
+    uint64_t C,
+    uint64_t M,
+    uint64_t seed,
+    size_t n
+) {
+    uint64_t state = (seed != 0ULL) ? seed : (uint64_t)time(NULL);
+    uint64_t used_seed = state;
+
+    for (size_t i = 0; i < n; ++i) {
+        state = (A * state + C) % M;
+        // scale to [0, 1) even if M != 2^64
+        out[i] = (double)state / (double)M;
+    }
     return used_seed;
 }
 
