@@ -160,7 +160,12 @@ static inline uint64_t lcg_test_random(
     uint64_t used_seed = state;
 
     for (size_t i = 0; i < n; ++i) {
-        state = (A * state + C) % M;
+        // Use bitwise AND if M is a power of two, else use modulo
+        if ((M & (M - 1)) == 0 && M != 0) {
+            state = (A * state + C) & (M - 1);
+        } else {
+            state = (A * state + C) % M;
+        }
         // scale to [0, 1) even if M != 2^64
         out[i] = (double)state / (double)M;
     }
