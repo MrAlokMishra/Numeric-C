@@ -145,11 +145,14 @@ static inline void lcg_seed(uint64_t seed) {
 /**
  * @brief Fill an array with random doubles in [0, 1).
  *
- * @param out Output array to fill.
+ * @param out Output array to fill (must not be NULL).
  * @param n   Number of random numbers to generate.
  * @return    The seed used for generation.
+ *            Returns 0ULL if @p out is NULL.
  */
 static inline uint64_t lcg_random(double *out, size_t n) {
+    if (!out) return 0ULL;
+
     if (!user_seeded && lcg_state == 0ULL) {
         lcg_state = PRE_SEED; // Auto-seed
     }
@@ -164,11 +167,14 @@ static inline uint64_t lcg_random(double *out, size_t n) {
 /**
  * @brief Test any LCG params: X_{n+1} = (A * X_n + C) mod M
  *
- * @param out Output array to fill.
- * @param n   Number of random numbers to generate.
- * @param A   Multiplier.
- * @param C   Increment.
- * @param M   Modulus.
+ * @param out  Output array to fill (must not be NULL).
+ * @param A    Multiplier.
+ * @param C    Increment.
+ * @param M    Modulus.
+ * @param seed Initial seed (0ULL uses default PRE_SEED).
+ * @param n    Number of random numbers to generate.
+ * @return     The seed used for generation.
+ *             Returns 0ULL if @p out is NULL.
  */
 static inline uint64_t lcg_test_random(
     double *out,
@@ -178,6 +184,8 @@ static inline uint64_t lcg_test_random(
     uint64_t seed,
     size_t n
 ) {
+    if (!out) return 0ULL;
+
     uint64_t state = (seed != 0ULL) ? seed : (uint64_t)PRE_SEED;
     uint64_t used_seed = state;
 
@@ -193,6 +201,36 @@ static inline uint64_t lcg_test_random(
     }
     return used_seed;
 }
+
+
+/**
+ * @brief Generate samples from an arbitrary distribution using inverse CDF sampling.
+ *
+ * @param inv_cdf  Function pointer to inverse CDF: double f(double u).
+ * @param out      Output array of samples.
+ * @param n        Number of samples to generate.
+ * @return         The seed used for generation on success,
+ *                 or 0ULL if an error occurs (e.g., NULL pointer or malloc failure).
+ *
+ */
+static inline uint64_t lcg_inverse_sample(double (*inv_cdf)(double), double *out, size_t n) {
+    if (!inv_cdf || !out) return 0ULL;
+
+    // Step 1: generate uniform(0,1) numbers
+    double *uniforms = malloc(n * sizeof(double));
+    if (!uniforms) return 0ULL;
+
+    uint64_t seed_used = lcg_random(uniforms, n);
+
+    // Step 2: apply inverse CDF to each uniform
+    for (size_t i = 0; i < n; ++i) {
+        out[i] = inv_cdf(uniforms[i]);
+    }
+
+    free(uniforms);
+    return seed_used;
+}
+
 
 /**
  * @section Section 2: Matrix Struct and Basic Operations
@@ -563,6 +601,8 @@ static inline int mat_apply_perm(const Matrix *src, Matrix *dest, const size_t *
 
     return 0;
 }
+
+
 
 
 
