@@ -478,34 +478,39 @@ int mat_mul(const Matrix *a, const Matrix *b, Matrix *result) {
  */
 
 #define LU_SUCCESS       0
-#define LU_SINGULAR      1
+#define LU_SINGULAR      -2
 #define LU_INVALID       -1
 #define LU_PIVOT_THRESHOLD 1e-12
 
 /**
- * @brief LU decomposition with partial pivoting (column-skipping style, optimized)
+ * @brief LU decomposition with partial pivoting
  *
  * Decomposes square matrix A into PA = LU.
  * L is unit lower-triangular, U is upper-triangular,
  * P is represented as a permutation array perm[].
  *
  * @param A Pointer to square matrix to decompose
- * @param L Pointer to pre-allocated L matrix (rows x cols)
- * @param U Pointer to pre-allocated U matrix (rows x cols)
- * @param perm Pointer to pre-allocated permutation array of size rows
+ * @param L Pointer to pre-allocated L matrix
+ * @param U Pointer to pre-allocated U matrix
+ * @param perm Permutation array of size rows
+ * @param num_swaps Output: number of row swaps
  * @return LU_SUCCESS on success,
  *         LU_SINGULAR if a near-zero pivot was detected,
- *         LU_INVALID if input is NULL or matrices not square
+ *         LU_INVALID if input is invalid
  */
 
-int mat_lu_decompose(const Matrix *A, Matrix *L, Matrix *U, size_t *perm) {
+int mat_lu_decompose(const Matrix *A, Matrix *L, Matrix *U,
+                     size_t *perm, int *num_swaps) {
     if (!A || !A->data || !L || !L->data || !U || !U->data || !perm)
         return LU_INVALID;
     if (A->rows != A->cols || L->rows != L->cols || U->rows != U->cols)
         return LU_INVALID;
 
     size_t n = A->rows;
-    int status = LU_SUCCESS;
+    int status = 0;
+
+    if (num_swaps)
+        *num_swaps = 0;
 
     // Initialize permutation and copy A into U
     for (size_t i = 0; i < n; i++) {
@@ -516,8 +521,7 @@ int mat_lu_decompose(const Matrix *A, Matrix *L, Matrix *U, size_t *perm) {
         }
     }
 
-    size_t pivot_row = 0;
-    size_t pivot_col = 0;
+    size_t pivot_row = 0, pivot_col = 0;
 
     while (pivot_row < n && pivot_col < n) {
         // Find max pivot in current column
@@ -532,7 +536,7 @@ int mat_lu_decompose(const Matrix *A, Matrix *L, Matrix *U, size_t *perm) {
         }
 
         if (max_val < LU_PIVOT_THRESHOLD) {
-            // No pivot in this column, skip
+            // No good pivot, skip column
             pivot_col++;
             continue;
         }
@@ -555,9 +559,12 @@ int mat_lu_decompose(const Matrix *A, Matrix *L, Matrix *U, size_t *perm) {
             size_t tmp_p = perm[pivot_row];
             perm[pivot_row] = perm[max_row];
             perm[max_row] = tmp_p;
+
+            if (num_swaps)  // only update if provided
+                (*num_swaps)++;
         }
 
-        // Elimination below pivot
+        // Eliminate below pivot
         for (size_t i = pivot_row + 1; i < n; i++) {
             double mult = U->data[i * n + pivot_col] / U->data[pivot_row * n + pivot_col];
             L->data[i * n + pivot_row] = mult;
@@ -603,6 +610,8 @@ static inline int mat_apply_perm(const Matrix *src, Matrix *dest, const size_t *
     return 0;
 }
 
+
+
 /**
  * @brief Solve a linear system Ax = b using LU decomposition (with permutation).
  *
@@ -634,7 +643,7 @@ int mat_lu_solve(const Matrix *A, const double *b, double *x) {
     }
 
     // Perform LU decomposition
-    int status = mat_lu_decompose(A, L, U, perm);
+    int status = mat_lu_decompose(A, L, U, perm , NULL);
     if (status != LU_SUCCESS) {
         mat_free(L);
         mat_free(U);
@@ -696,7 +705,63 @@ int mat_lu_solve(const Matrix *A, const double *b, double *x) {
 }
 
 
+/**
+ * @brief Compute determinant of a square matrix using LU decomposition
+ *
+ * This function performs LU decomposition of A and computes the determinant as
+ * det(A) = (-1)^num_swaps * product of diagonal elements of U.
+ *
+ * @param A Pointer to square matrix (Matrix*) created with mat_new()
+ * @return Determinant value as double:
+ *         - Returns 0.0 if the matrix is singular.
+ *         - Returns NAN if A is NULL, non-square, or memory allocation fails.
+ */
+double mat_determinant(const Matrix *A) {
+    if (!A || !A->data || A->rows != A->cols)
+        return NAN;
 
+    size_t n = A->rows;
+    
+    Matrix *L = mat_new(n, n);
+    Matrix *U = mat_new(n, n);
+    size_t *perm = malloc(n * sizeof(size_t));
+    int num_swaps = 0;
+
+    if (!L || !U || !perm) {
+        if (L) mat_free(L);
+        if (U) mat_free(U);
+        free(perm);
+        return NAN;  // memory allocation error
+    }
+
+    int status = mat_lu_decompose(A, L, U, perm, &num_swaps);
+    if (status == LU_SINGULAR) {
+        mat_free(L);
+        mat_free(U);
+        free(perm);
+        return 0.0;  // singular matrix
+    } else if (status != LU_SUCCESS) {
+        mat_free(L);
+        mat_free(U);
+        free(perm);
+        return NAN;  // invalid input or other error
+    }
+
+    // Compute det(U)
+    double detU = 1.0;
+    for (size_t i = 0; i < n; i++)
+        detU *= U->data[i * n + i];
+
+    // determinant = (-1)^num_swaps * detU
+    double det = (num_swaps % 2 == 0) ? detU : -detU;
+
+    // Cleanup
+    mat_free(L);
+    mat_free(U);
+    free(perm);
+
+    return det;
+}
 
 
 #endif  // _NUMMETH_H_
