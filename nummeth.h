@@ -537,8 +537,9 @@ int mat_lu_decompose(const Matrix *A, Matrix *L, Matrix *U, size_t *perm) {
             continue;
         }
 
-        // Swap rows in U
+        // If max_row != pivot_row
         if (max_row != pivot_row) {
+            // Swap rows in U
             for (size_t j = 0; j < n; j++) {
                 double tmp = U->data[pivot_row * n + j];
                 U->data[pivot_row * n + j] = U->data[max_row * n + j];
@@ -602,7 +603,97 @@ static inline int mat_apply_perm(const Matrix *src, Matrix *dest, const size_t *
     return 0;
 }
 
+/**
+ * @brief Solve a linear system Ax = b using LU decomposition (with permutation).
+ *
+ * This function performs the LU decomposition of A internally.
+ *
+ * @param A Coefficient matrix (n x n)
+ * @param b Right-hand side vector (length n)
+ * @param x Solution vector (pre-allocated, length n)
+ * @return LU_SUCCESS on success,
+ *         LU_SINGULAR if U has a near-zero pivot,
+ *         LU_INVALID if inputs are invalid
+ */
+int mat_lu_solve(const Matrix *A, const double *b, double *x) {
+    if (!A || !b || !x) return LU_INVALID;
+    if (A->rows != A->cols) return LU_INVALID;
 
+    size_t n = A->rows;
+
+    // Allocate L, U, and permutation
+    Matrix *L = mat_new(n, n);
+    Matrix *U = mat_new(n, n);
+    size_t *perm = malloc(n * sizeof *perm);
+
+    if (!L || !U || !perm) {
+        if (L) mat_free(L);
+        if (U) mat_free(U);
+        if (perm) free(perm);
+        return LU_INVALID;
+    }
+
+    // Perform LU decomposition
+    int status = mat_lu_decompose(A, L, U, perm);
+    if (status != LU_SUCCESS) {
+        mat_free(L);
+        mat_free(U);
+        free(perm);
+        return status; // could be LU_SINGULAR or LU_INVALID
+    }
+
+    // Step 1: Apply permutation to b → b'
+    double *bp = malloc(n * sizeof *bp);
+    if (!bp) {
+        mat_free(L);
+        mat_free(U);
+        free(perm);
+        return LU_INVALID;
+    }
+    for (size_t i = 0; i < n; i++)
+        bp[i] = b[perm[i]];
+
+    // Step 2: Forward substitution Ly = b'
+    double *y = malloc(n * sizeof *y);
+    if (!y) {
+        free(bp);
+        mat_free(L);
+        mat_free(U);
+        free(perm);
+        return LU_INVALID;
+    }
+
+    for (size_t i = 0; i < n; i++) {
+        double sum = bp[i];
+        for (size_t j = 0; j < i; j++) {
+            sum -= L->data[i * n + j] * y[j];
+        }
+        y[i] = sum;  // L has unit diagonal
+    }
+
+    // Step 3: Backward substitution Ux = y
+    for (size_t i = n - 1; i < n; i--) {
+        double sum = y[i];
+        for (size_t j = i + 1; j < n; j++) {
+            sum -= U->data[i * n + j] * x[j];
+        }
+        if (fabs(U->data[i * n + i]) < LU_PIVOT_THRESHOLD) {
+            free(bp); free(y);
+            mat_free(L); mat_free(U); free(perm);
+            return LU_SINGULAR;
+        }
+        x[i] = sum / U->data[i * n + i];
+    }
+
+    // Cleanup
+    free(bp);
+    free(y);
+    mat_free(L);
+    mat_free(U);
+    free(perm);
+
+    return LU_SUCCESS;
+}
 
 
 
