@@ -474,7 +474,18 @@ int mat_mul(const Matrix *a, const Matrix *b, Matrix *result) {
 
 /**
  * @section Section 3: Matrix Application functions
- * 
+/**
+ * @section Section 3: Matrix Application functions
+ * @brief LU, permutation, solve, determinant and inverse utilities for Matrix.
+ *
+ * @details
+ * - mat_lu_decompose: PA = LU with partial pivoting (perm[], num_swaps).
+ * - mat_apply_perm: apply row permutation to a matrix.
+ * - mat_lu_solve: solve Ax = b using LU (allocates temporaries).
+ * - mat_determinant: det(A) = (-1)^swaps * prod(diag(U)); 0 for singular, NAN on error.
+ * - mat_inverse: compute A^{-1} by solving for canonical basis vectors.
+ *
+ * Inputs are validated; functions return LU_SUCCESS, LU_SINGULAR, or LU_INVALID.
  */
 
 #define LU_SUCCESS       0
@@ -485,7 +496,7 @@ int mat_mul(const Matrix *a, const Matrix *b, Matrix *result) {
 /**
  * @brief LU decomposition with partial pivoting
  *
- * Decomposes square matrix A into PA = LU.
+ * Decomposes square matrix A into PA = LU, using Gauss-Jordan Elemination.
  * L is unit lower-triangular, U is upper-triangular,
  * P is represented as a permutation array perm[].
  *
@@ -598,7 +609,6 @@ int mat_lu_decompose(const Matrix *A, Matrix *L, Matrix *U,
  * @param perm Permutation array of length src->rows.
  * @return 0 on success, -1 if pointers or dimensions are invalid.
  */
-
 static inline int mat_apply_perm(const Matrix *src, Matrix *dest, const size_t *perm) {
     if (!src || !src->data || !dest || !dest->data || !perm) return -1;
     if (src->rows != dest->rows || src->cols != dest->cols) return -1;
@@ -762,6 +772,58 @@ double mat_determinant(const Matrix *A) {
 
     return det;
 }
+
+
+
+
+/**
+ * @brief Compute the inverse of a square matrix A and store it in inv.
+ *
+ * The function computes the inverse by solving n linear systems A * x = e_i for
+ * each canonical basis vector e_i (i = 0..n-1) and placing each solution vector
+ * x as the i-th column of inv. Temporary working arrays are allocated internally.
+ *
+ * @param  A   Pointer to the input Matrix to invert.
+ * @param  inv Pointer to the Matrix that will receive the inverse.
+ *
+ * @return LU_SUCCESS on success.
+ *         LU_INVALID If any pointer is NULL, A is not square, inv has mismatched
+ *                    dimensions, or an internal memory allocation for temporary
+ *                    buffers fails.
+ */
+int mat_inverse(const Matrix *A, Matrix *inv) {
+    if (!A || !A->data || !inv || !inv->data) return LU_INVALID;
+    if (A->rows != A->cols) return LU_INVALID;
+    if (inv->rows != A->rows || inv->cols != A->cols) return LU_INVALID;
+
+    size_t n = A->rows;
+    double *b = malloc(n * sizeof *b);
+    double *x = malloc(n * sizeof *x);
+    if (!b || !x) {
+        if(b) free(b);
+        if(x) free(x);
+        return LU_INVALID;
+    }
+
+    for (size_t col = 0; col < n; ++col) {
+        for (size_t i = 0; i < n; ++i) b[i] = (i == col) ? 1.0 : 0.0;
+
+        int status = mat_lu_solve(A, b, x);
+        if (status != LU_SUCCESS) {
+            if(b) free(b);
+            if(x) free(x);
+            return status;
+        }
+
+        for (size_t i = 0; i < n; ++i)
+            inv->data[i * n + col] = x[i];
+    }
+
+    free(b);
+    free(x);
+    return LU_SUCCESS;
+}
+
 
 
 #endif  // _NUMMETH_H_
