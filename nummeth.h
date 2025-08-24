@@ -488,341 +488,278 @@ int mat_mul(const Matrix *a, const Matrix *b, Matrix *result) {
  * Inputs are validated; functions return LU_SUCCESS, LU_SINGULAR, or LU_INVALID.
  */
 
-#define LU_SUCCESS       0
-#define LU_SINGULAR      -2
+#define LU_SUCCESS        0
 #define LU_INVALID       -1
+#define LU_SINGULAR      -2
 #define LU_PIVOT_THRESHOLD 1e-12
 
 /**
- * @brief LU decomposition with partial pivoting
+ * @brief In-place LU decomposition with partial pivoting.
  *
- * Decomposes square matrix A into PA = LU, using Gauss-Jordan Elemination.
- * L is unit lower-triangular, U is upper-triangular,
- * P is represented as a permutation array perm[].
+ * Factorizes a square matrix A into PA = LU, where:
+ * - L is unit lower-triangular (1s on diagonal, multipliers stored below diagonal in A),
+ * - U is upper-triangular (stored in and above the diagonal in A),
+ * - P is a row permutation matrix represented by `perm[]`.
  *
- * @param A Pointer to square matrix to decompose
- * @param L Pointer to pre-allocated L matrix
- * @param U Pointer to pre-allocated U matrix
- * @param perm Permutation array of size rows
- * @param num_swaps Output: number of row swaps
- * @return LU_SUCCESS on success,
+ * The decomposition is performed in-place: the input matrix A is overwritten
+ * with the combined LU factors. No additional L or U matrices are allocated.
+ *
+ * @param A          Pointer to a square matrix (modified in-place to contain LU).
+ * @param perm       Output array of length A->rows, representing row permutations.
+ * @param num_swaps  Output: number of row swaps performed (may be NULL if unused).
+ *
+ * @return LU_SUCCESS  on success,
  *         LU_SINGULAR if a near-zero pivot was detected,
- *         LU_INVALID if input is invalid
+ *         LU_INVALID  if input is invalid (null pointers or non-square matrix).
  */
-
-int mat_lu_decompose(const Matrix *A, Matrix *L, Matrix *U,
-                     size_t *perm, int *num_swaps) {
-    if (!A || !A->data || !L || !L->data || !U || !U->data || !perm)
-        return LU_INVALID;
-    if (A->rows != A->cols || L->rows != L->cols || U->rows != U->cols)
-        return LU_INVALID;
+int mat_lu_decompose(Matrix *A, size_t *perm, int *num_swaps) {
+    if (!A || !A->data || !perm) return LU_INVALID;
+    if (A->rows != A->cols) return LU_INVALID;
 
     size_t n = A->rows;
-    int status = 0;
+    if (num_swaps) *num_swaps = 0;
 
-    if (num_swaps)
-        *num_swaps = 0;
-
-    // Initialize permutation and copy A into U
-    for (size_t i = 0; i < n; i++) {
+    // initialize permutation
+    for (size_t i = 0; i < n; i++)
         perm[i] = i;
-        for (size_t j = 0; j < n; j++) {
-            U->data[i * n + j] = A->data[i * n + j];
-            L->data[i * n + j] = (i == j) ? 1.0 : 0.0;
-        }
-    }
 
-    size_t pivot_row = 0, pivot_col = 0;
-
-    while (pivot_row < n && pivot_col < n) {
-        // Find max pivot in current column
-        double max_val = 0.0;
-        size_t max_row = pivot_row;
-        for (size_t i = pivot_row; i < n; i++) {
-            double val = fabs(U->data[i * n + pivot_col]);
+    for (size_t k = 0; k < n; k++) {
+        // --- Pivot selection ---
+        size_t max_row = k;
+        double max_val = fabs(A->data[k * n + k]);
+        for (size_t i = k + 1; i < n; i++) {
+            double val = fabs(A->data[i * n + k]);
             if (val > max_val) {
                 max_val = val;
                 max_row = i;
             }
         }
 
-        if (max_val < LU_PIVOT_THRESHOLD) {
-            // No good pivot, skip column
-            pivot_col++;
-            continue;
-        }
+        if (max_val < LU_PIVOT_THRESHOLD)
+            return LU_SINGULAR;
 
-        // If max_row != pivot_row
-        if (max_row != pivot_row) {
-            // Swap rows in U
+        // --- Row swap if necessary ---
+        if (max_row != k) {
             for (size_t j = 0; j < n; j++) {
-                double tmp = U->data[pivot_row * n + j];
-                U->data[pivot_row * n + j] = U->data[max_row * n + j];
-                U->data[max_row * n + j] = tmp;
+                double tmp = A->data[k * n + j];
+                A->data[k * n + j] = A->data[max_row * n + j];
+                A->data[max_row * n + j] = tmp;
             }
-            // Swap L columns 0..pivot_row-1
-            for (size_t j = 0; j < pivot_row; j++) {
-                double tmp = L->data[pivot_row * n + j];
-                L->data[pivot_row * n + j] = L->data[max_row * n + j];
-                L->data[max_row * n + j] = tmp;
-            }
-            // Swap permutation
-            size_t tmp_p = perm[pivot_row];
-            perm[pivot_row] = perm[max_row];
+            size_t tmp_p = perm[k];
+            perm[k] = perm[max_row];
             perm[max_row] = tmp_p;
 
-            if (num_swaps)  // only update if provided
-                (*num_swaps)++;
+            if (num_swaps) (*num_swaps)++;
         }
 
-        // Eliminate below pivot
-        for (size_t i = pivot_row + 1; i < n; i++) {
-            double mult = U->data[i * n + pivot_col] / U->data[pivot_row * n + pivot_col];
-            L->data[i * n + pivot_row] = mult;
-            U->data[i * n + pivot_col] = 0.0; // explicitly zero lower part
-            for (size_t j = pivot_col + 1; j < n; j++) {
-                U->data[i * n + j] -= mult * U->data[pivot_row * n + j];
+        // --- Elimination step (store multipliers in lower triangle) ---
+        for (size_t i = k + 1; i < n; i++) {
+            double mult = A->data[i * n + k] / A->data[k * n + k];
+            A->data[i * n + k] = mult;
+            for (size_t j = k + 1; j < n; j++) {
+                A->data[i * n + j] -= mult * A->data[k * n + j];
             }
         }
-
-        pivot_row++;
-        pivot_col++;
     }
-
-    // Check if any diagonal of U is too small
-    for (size_t i = 0; i < n; i++) {
-        if (fabs(U->data[i * n + i]) < LU_PIVOT_THRESHOLD)
-            status = LU_SINGULAR;
-    }
-
-    return status;
-}
-
-
-/**
- * @brief Apply a row permutation to a matrix.
- *
- * Copies rows from `src` to `dest` according to `perm`.
- *
- * @param src Source matrix (rows x cols).
- * @param dest Destination matrix (pre-allocated, same size as src).
- * @param perm Permutation array of length src->rows.
- * @return 0 on success, -1 if pointers or dimensions are invalid.
- */
-static inline int mat_apply_perm(const Matrix *src, Matrix *dest, const size_t *perm) {
-    if (!src || !src->data || !dest || !dest->data || !perm) return -1;
-    if (src->rows != dest->rows || src->cols != dest->cols) return -1;
-
-    for (size_t i = 0; i < src->rows; i++)
-        for (size_t j = 0; j < src->cols; j++)
-            dest->data[i * src->cols + j] = src->data[perm[i] * src->cols + j];
-
-    return 0;
-}
-
-
-
-/**
- * @brief Solve a linear system Ax = b using LU decomposition (with permutation).
- *
- * This function performs the LU decomposition of A internally.
- *
- * @param A Coefficient matrix (n x n)
- * @param b Right-hand side vector (length n)
- * @param x Solution vector (pre-allocated, length n)
- * @return LU_SUCCESS on success,
- *         LU_SINGULAR if U has a near-zero pivot,
- *         LU_INVALID if inputs are invalid
- */
-int mat_lu_solve(const Matrix *A, const double *b, double *x) {
-    if (!A || !b || !x) return LU_INVALID;
-    if (A->rows != A->cols) return LU_INVALID;
-
-    size_t n = A->rows;
-
-    // Allocate L, U, and permutation
-    Matrix *L = mat_new(n, n);
-    Matrix *U = mat_new(n, n);
-    size_t *perm = malloc(n * sizeof *perm);
-
-    if (!L || !U || !perm) {
-        if (L) mat_free(L);
-        if (U) mat_free(U);
-        if (perm) free(perm);
-        return LU_INVALID;
-    }
-
-    // Perform LU decomposition
-    int status = mat_lu_decompose(A, L, U, perm , NULL);
-    if (status != LU_SUCCESS) {
-        mat_free(L);
-        mat_free(U);
-        free(perm);
-        return status; // could be LU_SINGULAR or LU_INVALID
-    }
-
-    // Step 1: Apply permutation to b → b'
-    double *bp = malloc(n * sizeof *bp);
-    if (!bp) {
-        mat_free(L);
-        mat_free(U);
-        free(perm);
-        return LU_INVALID;
-    }
-    for (size_t i = 0; i < n; i++)
-        bp[i] = b[perm[i]];
-
-    // Step 2: Forward substitution Ly = b'
-    double *y = malloc(n * sizeof *y);
-    if (!y) {
-        free(bp);
-        mat_free(L);
-        mat_free(U);
-        free(perm);
-        return LU_INVALID;
-    }
-
-    for (size_t i = 0; i < n; i++) {
-        double sum = bp[i];
-        for (size_t j = 0; j < i; j++) {
-            sum -= L->data[i * n + j] * y[j];
-        }
-        y[i] = sum;  // L has unit diagonal
-    }
-
-    // Step 3: Backward substitution Ux = y
-    for (size_t i = n - 1; i < n; i--) {
-        double sum = y[i];
-        for (size_t j = i + 1; j < n; j++) {
-            sum -= U->data[i * n + j] * x[j];
-        }
-        if (fabs(U->data[i * n + i]) < LU_PIVOT_THRESHOLD) {
-            free(bp); free(y);
-            mat_free(L); mat_free(U); free(perm);
-            return LU_SINGULAR;
-        }
-        x[i] = sum / U->data[i * n + i];
-    }
-
-    // Cleanup
-    free(bp);
-    free(y);
-    mat_free(L);
-    mat_free(U);
-    free(perm);
 
     return LU_SUCCESS;
 }
 
 
+
+
 /**
- * @brief Compute determinant of a square matrix using LU decomposition
+ * @brief Solve Ax = b in-place using LU decomposition with partial pivoting.
  *
- * This function performs LU decomposition of A and computes the determinant as
- * det(A) = (-1)^num_swaps * product of diagonal elements of U.
+ * On return:
+ *   - A is overwritten by its LU decomposition
+ *   - b is overwritten with the solution x
+ *
+ * @param A (n x n) coefficient matrix, modified to contain LU
+ * @param b (length n) RHS vector, overwritten with solution x
+ * @return LU_SUCCESS, LU_SINGULAR, or LU_INVALID
+ */
+int mat_lu_solve(Matrix *A, double *b) {
+    if (!A || !b) return LU_INVALID;
+    if (A->rows != A->cols) return LU_INVALID;
+
+    size_t n = A->rows;
+    size_t *perm = malloc(n * sizeof *perm);
+    if (!perm) return LU_INVALID;
+
+    // Perform in-place LU decomposition
+    int status = mat_lu_decompose(A, perm, NULL);
+    if (status != LU_SUCCESS) {
+        free(perm);
+        return status;
+    }
+
+    // Apply row permutations to b directly
+    for (size_t i = 0; i < n; i++) {
+        if (perm[i] != i) {
+            double tmp = b[i];
+            b[i] = b[perm[i]];
+            b[perm[i]] = tmp;
+        }
+    }
+
+   // Forward substitution: solve L y = P b
+for (size_t i = 0; i < n; i++) {
+    for (size_t j = 0; j < i; j++) {   // strictly lower part of A
+        b[i] -= A->data[i * n + j] * b[j];
+    }
+    // L has implicit 1s on diag → nothing else needed
+}
+
+// Backward substitution: solve U x = y
+for (long i = (long)n - 1; i >= 0; i--) {
+    for (size_t j = i + 1; j < n; j++) {   // strictly upper part of A
+        b[i] -= A->data[i * n + j] * b[j];
+    }
+    double diag = A->data[i * n + i];   // U's diagonal
+    if (fabs(diag) < LU_PIVOT_THRESHOLD) {
+        free(perm);
+        return LU_SINGULAR;
+    }
+    b[i] /= diag;
+}
+    free(perm);
+    return LU_SUCCESS;
+}
+
+
+/**
+ * @brief Compute determinant of a square matrix using in-place LU decomposition
+ *
+ * This function performs LU decomposition of A (in-place) and computes:
+ *      det(A) = (-1)^num_swaps * product of diagonal elements of U.
  *
  * @param A Pointer to square matrix (Matrix*) created with mat_new()
  * @return Determinant value as double:
  *         - Returns 0.0 if the matrix is singular.
  *         - Returns NAN if A is NULL, non-square, or memory allocation fails.
+ *
+ * Note: This function modifies A.
  */
-double mat_determinant(const Matrix *A) {
+double mat_determinant(Matrix *A) {
     if (!A || !A->data || A->rows != A->cols)
         return NAN;
+    if (A->rows != A->cols) return NAN; // non-square
 
     size_t n = A->rows;
-    
-    Matrix *L = mat_new(n, n);
-    Matrix *U = mat_new(n, n);
     size_t *perm = malloc(n * sizeof(size_t));
+    if (!perm) return NAN;
+
     int num_swaps = 0;
-
-    if (!L || !U || !perm) {
-        if (L) mat_free(L);
-        if (U) mat_free(U);
-        free(perm);
-        return NAN;  // memory allocation error
-    }
-
-    int status = mat_lu_decompose(A, L, U, perm, &num_swaps);
+    int status = mat_lu_decompose(A, perm, &num_swaps);
     if (status == LU_SINGULAR) {
-        mat_free(L);
-        mat_free(U);
         free(perm);
-        return 0.0;  // singular matrix
+        return 0.0; // Singular matrix → det = 0
     } else if (status != LU_SUCCESS) {
-        mat_free(L);
-        mat_free(U);
         free(perm);
-        return NAN;  // invalid input or other error
+        return NAN; // Error
     }
 
-    // Compute det(U)
-    double detU = 1.0;
+    // determinant = (-1)^num_swaps * product of diagonal of U
+    double det = (num_swaps % 2 == 0) ? 1.0 : -1.0;
     for (size_t i = 0; i < n; i++)
-        detU *= U->data[i * n + i];
+        det *= A->data[i * n + i];
 
-    // determinant = (-1)^num_swaps * detU
-    double det = (num_swaps % 2 == 0) ? detU : -detU;
-
-    // Cleanup
-    mat_free(L);
-    mat_free(U);
     free(perm);
-
     return det;
 }
 
 
 
-
 /**
- * @brief Compute the inverse of a square matrix A and store it in inv.
+ * @brief Computes the inverse of a square matrix using LU decomposition.
  *
- * The function computes the inverse by solving n linear systems A * x = e_i for
- * each canonical basis vector e_i (i = 0..n-1) and placing each solution vector
- * x as the i-th column of inv. Temporary working arrays are allocated internally.
+ * This function performs an in-place LU decomposition of the input matrix A,
+ * then explicitly computes the inverse of the upper-triangular matrix U,
+ * and solves for A⁻¹ by back-substitution and applying the permutation.
+ * 
+ * The algorithm follows the LAPACK-style approach:
+ *   A⁻¹ P⁻¹ L = U⁻¹
  *
- * @param  A   Pointer to the input Matrix to invert.
- * @param  inv Pointer to the Matrix that will receive the inverse.
+ * @param[in,out] A   Pointer to the input matrix (will be LU-decomposed in place).
+ * @param[out]    inv Pointer to the output matrix where the inverse is stored.
  *
- * @return LU_SUCCESS on success.
- *         LU_INVALID If any pointer is NULL, A is not square, inv has mismatched
- *                    dimensions, or an internal memory allocation for temporary
- *                    buffers fails.
+ * @return LU_SUCCESS if inversion succeeds,
+ *         LU_INVALID if input is invalid or allocation fails,
+ *         other LU_* error codes from mat_lu_decompose.
+ *
+ * Note : Function changes A
  */
-int mat_inverse(const Matrix *A, Matrix *inv) {
+int mat_inverse(Matrix *A, Matrix *inv) {
     if (!A || !A->data || !inv || !inv->data) return LU_INVALID;
     if (A->rows != A->cols) return LU_INVALID;
-    if (inv->rows != A->rows || inv->cols != A->cols) return LU_INVALID;
 
     size_t n = A->rows;
-    double *b = malloc(n * sizeof *b);
-    double *x = malloc(n * sizeof *x);
-    if (!b || !x) {
-        if(b) free(b);
-        if(x) free(x);
+    if (inv->rows != n || inv->cols != n) return LU_INVALID;
+
+    // Allocate permutation array
+    size_t *perm = malloc(n * sizeof *perm);
+    if (!perm) return LU_INVALID;
+
+    // Step 1: LU decomposition in-place
+    int status = mat_lu_decompose(A, perm, NULL);
+    if (status != LU_SUCCESS) {
+        free(perm);
+        return status;
+    }
+
+
+    // Step 2: Initialize Uinv as identity
+    Matrix *Uinv = mat_new(n, n);
+    if (!Uinv->data) {
+        free(perm);
         return LU_INVALID;
     }
 
-    for (size_t col = 0; col < n; ++col) {
-        for (size_t i = 0; i < n; ++i) b[i] = (i == col) ? 1.0 : 0.0;
+    for (size_t i = 0; i < n * n; i++)
+        Uinv->data[i] = 0.0;
 
-        int status = mat_lu_solve(A, b, x);
-        if (status != LU_SUCCESS) {
-            if(b) free(b);
-            if(x) free(x);
-            return status;
+    for (size_t i = 0; i < n; i++)
+        Uinv->data[i * n + i] = 1.0;
+
+    // Step 3: Compute U^-1 (upper-triangular inversion)
+    for (long i = (long)n - 1; i >= 0; i--) {
+        Uinv->data[i * n + i] = 1 / A->data[i * n + i]; // diagonal
+
+        for (long j = i - 1; j >= 0; j--) {
+            double sum = 0.0;
+
+            for (long k = j + 1; k <= i; k++)
+                sum += A->data[j * n + k] * Uinv->data[k * n + i];
+
+            Uinv->data[j * n + i] = -sum / A->data[j * n + j];
         }
-
-        for (size_t i = 0; i < n; ++i)
-            inv->data[i * n + col] = x[i];
     }
 
-    free(b);
-    free(x);
+
+    // Step 4: Forward substitution X L = U^-1
+    for (size_t row = 0; row < n; row++) {             
+        for (long col = (long)n - 2; col >= 0; col--) { 
+            double sum = 0.0;
+
+            for (size_t k = col + 1; k < n; k++)
+                sum += A->data[k * n + col] * Uinv->data[row * n + k];
+
+            Uinv->data[row * n + col] -= sum;
+        }
+    }
+
+    // Step 5: Apply permutation: inv = X P
+    for (size_t i = 0; i < n; i++)
+        for (size_t j = 0; j < n; j++)
+            inv->data[i * n + j] = Uinv->data[i * n + perm[j]];
+
+    mat_free(Uinv);
+    free(perm);
+
     return LU_SUCCESS;
 }
+
 
 
 
