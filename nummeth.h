@@ -641,7 +641,7 @@ for (long i = (long)n - 1; i >= 0; i--) {
  *
  * Note: This function modifies A.
  */
-double mat_determinant(Matrix *A) {
+static double mat_determinant(Matrix *A) {
     if (!A || !A->data || A->rows != A->cols)
         return NAN;
     if (A->rows != A->cols) return NAN; // non-square
@@ -758,6 +758,131 @@ int mat_inverse(Matrix *A, Matrix *inv) {
     free(perm);
 
     return LU_SUCCESS;
+}
+
+
+/**
+ * @brief In-place Cholesky decomposition of a Hermitian positive definite matrix.
+ *
+ * @param A Matrix to decompose (must be square and strictly Hermitian).
+ *          On success, the lower triangle contains L such that A = L L^T,
+ *          and the upper triangle is zeroed out.
+ *
+ * @note The input must be strictly Hermitian and positive definite.
+ *       If the matrix is not positive definite, decomposition fails.
+ *
+ * @return 0 on success, or k (1-based index) if the leading minor of order k
+ *         is not positive definite.
+ */
+
+static int mat_chol_hpd(Matrix *A) {
+    if (!A || A->rows != A->cols) return -1;
+
+    size_t n = A->rows;
+
+    for (size_t j = 0; j < n; j++) {
+        double sum = A->data[j * n + j];
+
+        // subtract L[j,0..j-1]^2
+        for (size_t k = 0; k < j; k++) {
+            double l_jk = A->data[j * n + k];
+            sum -= l_jk * l_jk;
+        }
+
+        if (sum <= 0.0) {
+            return (int)(j + 1); // not positive definite
+        }
+
+        double l_jj = sqrt(sum);
+        A->data[j * n + j] = l_jj;
+
+        // update column j below the diagonal
+        for (size_t i = j + 1; i < n; i++) {
+            double s = A->data[i * n + j];
+            for (size_t k = 0; k < j; k++) {
+                s -= A->data[i * n + k] * A->data[j * n + k];
+            }
+            A->data[i * n + j] = s / l_jj;
+        }
+    }
+
+    // optional: zero out upper triangle
+    for (size_t i = 0; i < n; i++) {
+        for (size_t j = i + 1; j < n; j++) {
+            A->data[i * n + j] = 0.0;
+        }
+    }
+
+    return 0;
+}
+
+/**
+ * @brief Solve A x = b using Cholesky factorization (in place).
+ *
+ * @param A Matrix to decompose (must be square and strictly Hermitian 
+ *          positive definite). Will be overwritten by its Cholesky factor L.
+ * @param b Right-hand side vector, overwritten with the solution x.
+ *
+ * @note The input matrix must be strictly Hermitian and positive definite.
+ *       If factorization fails, the system cannot be solved.
+ *
+ * @return 0 on success, or k (1-based index) if the leading minor of order k
+ *         is not positive definite (factorization failed).
+ */
+static int mat_chol_solve(Matrix *A, double *b) {
+    if (!A || A->rows != A->cols || !b || !A->data) return -1;
+
+    size_t n = A->rows;
+
+    // Step 1: Cholesky decomposition in-place
+    int status = mat_chol_hpd(A);
+    if (status != 0) {
+        return status; // not positive definite
+    }
+
+    // Step 2: Forward substitution (L y = b)
+    for (size_t i = 0; i < n; i++) {
+        double sum = b[i];
+        for (size_t j = 0; j < i; j++) {
+            sum -= A->data[i * n + j] * b[j];
+        }
+        b[i] = sum / A->data[i * n + i];
+    }
+
+    // Step 3: Back substitution (L^T x = y)
+    for (long i = (long)n - 1; i >= 0; i--) {
+        double sum = b[i];
+        for (size_t j = i + 1; j < n; j++) {
+            sum -= A->data[j * n + i] * b[j];
+        }
+        b[i] = sum / A->data[i * n + i];
+    }
+
+    return 0;
+}
+
+/**
+ * @brief Compute determinant of a Hermitian positive definite matrix using Cholesky factorization.
+ *
+ * @param A Matrix (must be square and strictly Hermitian positive definite).
+ *          On success, A is overwritten by its Cholesky factor L.
+ *
+ * @return Determinant of A on success, or NAN if factorization fails.
+ */
+double mat_det_hpd(Matrix* A) {
+    if (!A || A->rows != A->cols || !A->data) return -1;
+    size_t n = A->rows;
+    int status = mat_chol_hpd(A);
+    if (status != 0) {
+        return NAN;  // failed factorization -> not HPD
+    }
+
+    double prod = 1.0;
+    for (size_t i = 0; i < n; i++) {
+        double Lii = A->data[i*n + i];
+        prod *= Lii;
+    }
+    return prod * prod;  // det(A) = (∏ diag(L))^2
 }
 
 
